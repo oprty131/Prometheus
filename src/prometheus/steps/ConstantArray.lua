@@ -197,21 +197,13 @@ local function rotate(t, d, n)
 	reverse(t, d+1, n)
 end
 
-local rotateCode = [[
-	local __idx = 1
-	for i, v in ipairs({{1, LEN}, {1, SHIFT}, {SHIFT + 1, LEN}}) do
-		while v[1] < v[2] do
-			ARR[v[1]], ARR[v[2]], v[1], v[2] = ARR[v[2]], ARR[v[1]], v[1] + 1, v[2] - 1
-		end
-		__idx = __idx + 1
-	end
-]]
-
 function ConstantArray:addRotateCode(ast, shift)
+	local rotateCode = "local __idx = 1 for i, v in ipairs({{1, LEN}, {1, SHIFT}, {SHIFT + 1, LEN}}) do while v[1] < v[2] do ARR[v[1]], ARR[v[2]], v[1], v[2] = ARR[v[2]], ARR[v[1]], v[1] + 1, v[2] - 1 end __idx = __idx + 1 end"
+	local code = string.gsub(string.gsub(rotateCode, "SHIFT", tostring(shift)), "LEN", tostring(#self.constants))
 	local parser = Parser:new({
 		LuaVersion = LuaVersion.Lua51
 	})
-	local newAst = parser:parse(string.gsub(string.gsub(rotateCode, "SHIFT", tostring(shift)), "LEN", tostring(#self.constants)))
+	local newAst = parser:parse(code)
 	local forStat = newAst.body.statements[1]
 	forStat.body.scope:setParent(ast.body.scope)
 	visitast(newAst, nil, function(node, data)
@@ -827,8 +819,7 @@ function ConstantArray:apply(ast, pipeline)
 
 	table.insert(ast.body.statements, 1, Ast.LocalVariableDeclaration(self.rootScope, {self.arrId}, {self:createArray()}))
 
-	self.rootScope = nil
-	self.arrId = nil
+	self.rootScope = nil	self.arrId = nil
 	self.constants = nil
 	self.lookup = nil
 end
