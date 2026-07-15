@@ -61,11 +61,6 @@ local function generateSanityCheck()
 			addCode("            end\n")
 		else
 			addCode("        elseif i == %d then\n", i)
-
-			--[[
-                Basically, even iterations are used to assign a new sanity check value,
-                and odd iterations are used to validate the previous sanity check value.
-            ]]
 			if i % 2 == 0 then
 				generateAssignment(i)
 			else
@@ -86,62 +81,139 @@ function AntiTamper:apply(ast, pipeline)
 		logger:warn(string.format('"%s" cannot be used with PrettyPrint, ignoring "%s"', self.Name, self.Name))
 		return ast
 	end
+	local antiTraceCode = [[
+do
+	local function detect_environment()
+		local has_debug = type(debug) == "table"
+		local has_loadstring = type(loadstring) == "function"
+		local has_load = type(load) == "function"
+		local env_checks = {
+			pcall(function() return __log_leaf end),
+			pcall(function() return _ENV.__log_leaf end),
+			pcall(function() return rawget(_G, "__log_leaf") end),
+			pcall(function() return rawget(_ENV or {}, "__log_leaf") end),
+			pcall(function() return getfenv and getfenv().__log_leaf end),
+		}
+		local hook_count = 0
+		if debug and debug.gethook then
+			local hook = debug.gethook()
+			if hook then
+				hook_count = 1
+			end
+		end
+		local function check_override(name)
+			local original = _G[name]
+			if not original then return false end
+			local str = tostring(original)
+			return str:find("stub") or str:find("__log_leaf") or str:find("trace")
+		end
+		local overrides = {
+			check_override("print"),
+			check_override("io"),
+			check_override("load"),
+			check_override("loadstring"),
+			pcall(function() return type(debug.sethook) ~= "function" end),
+		}
+		local detected = false
+		for _, check in ipairs(env_checks) do
+			if check and check ~= true then
+				detected = true
+				break
+			end
+		end
+		if not detected and hook_count > 0 then
+			detected = true
+		end
+		if not detected then
+			for _, override in ipairs(overrides) do
+				if override then
+					detected = true
+					break
+				end
+			end
+		end
+		return detected
+	end
+	if detect_environment() then
+		local function corrupt()
+			local x = 0
+			for i = 1, 1000 do
+				x = x + i * (i % 3 + 1)
+				if i % 100 == 0 then
+					local y = x / (i + 1)
+					x = y * i
+				end
+			end
+			return x
+		end
+		local result = corrupt()
+		if result % 2 == 0 then
+			local _ = {}
+			_.a = function() end
+			_.b = function() end
+			_G.__obfuscated = true
+		end
+		while true do
+			local r = math.random(1, 10)
+			if r == 100 then
+				break
+			end
+		end
+	end
+end
+]]
+	local antiAst = Parser:new({ LuaVersion = Enums.LuaVersion.Lua51 }):parse(antiTraceCode)
+	for i = #antiAst.body.statements, 1, -1 do
+		table.insert(ast.body.statements, 1, antiAst.body.statements[i])
+	end
 	local code = generateSanityCheck()
 	if self.UseDebug then
 		local string = RandomStrings.randomString()
 		code = code
 			.. [[
-            -- Anti Beautify
-			local sethook = debug and debug.sethook or function() end;
-			local allowedLine = nil;
-			local called = 0;
-			sethook(function(s, line)
-				if not line then
-					return
-				end
-				called = called + 1;
-				if allowedLine then
-					if allowedLine ~= line then
-						sethook(error, "l", 5);
-					end
-				else
-					allowedLine = line;
-				end
-			end, "l", 5);
-			(function() end)();
-			(function() end)();
-			sethook();
-			if called < 2 then
-				valid = false;
-			end
+            local sethook = debug and debug.sethook or function() end;
+            local allowedLine = nil;
+            local called = 0;
+            sethook(function(s, line)
+                if not line then
+                    return
+                end
+                called = called + 1;
+                if allowedLine then
+                    if allowedLine ~= line then
+                        sethook(error, "l", 5);
+                    end
+                else
+                    allowedLine = line;
+                end
+            end, "l", 5);
+            (function() end)();
+            (function() end)();
+            sethook();
             if called < 2 then
                 valid = false;
             end
-
-            -- Anti Function Hook
+            if called < 2 then
+                valid = false;
+            end
             local funcs = {pcall, string.char, debug.getinfo, string.dump}
             for i = 1, #funcs do
                 if debug.getinfo(funcs[i]).what ~= "C" then
                     valid = false;
                 end
-
                 if debug.getupvalue(funcs[i], 1) then
                     valid = false;
                 end
-
                 if pcall(string.dump, funcs[i]) then
                     valid = false;
                 end
             end
-
-            -- Anti Beautify
             local function getTraceback()
                 local str = (function(arg)
                     return debug.traceback(arg)
                 end)("]] .. string .. [[");
                 return str;
             end
-
             local traceback = getTraceback();
             valid = valid and traceback:sub(1, traceback:find("\n") - 1) == "]] .. string .. [[";
             local iter = traceback:gmatch(":(%d*):");
@@ -156,12 +228,10 @@ function AntiTamper:apply(ast, pipeline)
     code = code .. [[
     local gmatch = string.gmatch;
     local err = function() error("Tamper Detected!") end;
-
     local pcallIntact2 = false;
     local pcallIntact = pcall(function()
         pcallIntact2 = true;
     end) and pcallIntact2;
-
     local random = math.random;
     local tblconcat = table.concat;
     local unpkg = table and table.unpack or unpack;
@@ -201,7 +271,6 @@ function AntiTamper:apply(ast, pipeline)
         end
     end
     valid = valid and acc1 == acc2;
-
     if valid then else
         repeat
             return (function()
@@ -222,23 +291,18 @@ function AntiTamper:apply(ast, pipeline)
         return;
     end
 end
-
-    -- Anti Function Arg Hook
     local obj = setmetatable({}, {
         __tostring = err,
     });
     obj[math.random(1, 100)] = obj;
     (function() end)(obj);
-
     repeat until valid;
     ]]
-
-    local parsed = Parser:new({LuaVersion = Enums.LuaVersion.Lua51}):parse(code);
-    local doStat = parsed.body.statements[1];
-    doStat.body.scope:setParent(ast.body.scope);
-    table.insert(ast.body.statements, 1, doStat);
-
-    return ast;
+    local parsed = Parser:new({LuaVersion = Enums.LuaVersion.Lua51}):parse(code)
+    local doStat = parsed.body.statements[1]
+    doStat.body.scope:setParent(ast.body.scope)
+    table.insert(ast.body.statements, 1, doStat)
+    return ast
 end
 
-return AntiTamper;
+return AntiTamper
