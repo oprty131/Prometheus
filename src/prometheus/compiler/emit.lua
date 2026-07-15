@@ -4,176 +4,286 @@
 --
 -- This Script contains the container function body emission for the compiler.
 
-local Ast = require("prometheus.ast");
-local Scope = require("prometheus.scope");
-local util = require("prometheus.util");
-local constants = require("prometheus.compiler.constants");
-local AstKind = Ast.AstKind;
+local Ast = require("prometheus.ast")
+local Scope = require("prometheus.scope")
+local util = require("prometheus.util")
+local constants = require("prometheus.compiler.constants")
+local AstKind = Ast.AstKind
 
-local MAX_REGS = constants.MAX_REGS;
+local MAX_REGS = constants.MAX_REGS
 
 return function(Compiler)
     local function hasAnyEntries(tbl)
-        return type(tbl) == "table" and next(tbl) ~= nil;
+        return type(tbl) == "table" and next(tbl) ~= nil
     end
 
     local function unionLookupTables(a, b)
-        local out = {};
+        local out = {}
         for k, v in pairs(a or {}) do
-            out[k] = v;
+            out[k] = v
         end
         for k, v in pairs(b or {}) do
-            out[k] = v;
+            out[k] = v
         end
-        return out;
+        return out
     end
 
     local function canMergeParallelAssignmentStatements(statA, statB)
         if type(statA) ~= "table" or type(statB) ~= "table" then
-            return false;
+            return false
         end
 
         if statA.usesUpvals or statB.usesUpvals then
-            return false;
+            return false
         end
 
-        local a = statA.statement;
-        local b = statB.statement;
+        local a = statA.statement
+        local b = statB.statement
         if type(a) ~= "table" or type(b) ~= "table" then
-            return false;
+            return false
         end
         if a.kind ~= AstKind.AssignmentStatement or b.kind ~= AstKind.AssignmentStatement then
-            return false;
+            return false
         end
 
         if type(a.lhs) ~= "table" or type(a.rhs) ~= "table" or type(b.lhs) ~= "table" or type(b.rhs) ~= "table" then
-            return false;
+            return false
         end
 
         if #a.lhs ~= #a.rhs or #b.lhs ~= #b.rhs then
-            return false;
+            return false
         end
 
-        -- Avoid merging vararg/call assignments because they can affect multi-return behavior.
         local function hasUnsafeRhs(rhsList)
             for _, rhsExpr in ipairs(rhsList) do
                 if type(rhsExpr) ~= "table" then
-                    return true;
+                    return true
                 end
-                local kind = rhsExpr.kind;
+                local kind = rhsExpr.kind
                 if kind == AstKind.FunctionCallExpression or kind == AstKind.PassSelfFunctionCallExpression or kind == AstKind.VarargExpression then
-                    return true;
+                    return true
                 end
             end
-            return false;
+            return false
         end
         if hasUnsafeRhs(a.rhs) or hasUnsafeRhs(b.rhs) then
-            return false;
+            return false
         end
 
-        local aReads = type(statA.reads) == "table" and statA.reads or {};
-        local aWrites = type(statA.writes) == "table" and statA.writes or {};
-        local bReads = type(statB.reads) == "table" and statB.reads or {};
-        local bWrites = type(statB.writes) == "table" and statB.writes or {};
+        local aReads = type(statA.reads) == "table" and statA.reads or {}
+        local aWrites = type(statA.writes) == "table" and statA.writes or {}
+        local bReads = type(statB.reads) == "table" and statB.reads or {}
+        local bWrites = type(statB.writes) == "table" and statB.writes or {}
 
-        -- Allow merging even if one statement has no writes (e.g., x = o(x) style assignments)
-        -- Only require that at least one of them has writes
         if not hasAnyEntries(aWrites) and not hasAnyEntries(bWrites) then
-            return false;
+            return false
         end
 
         for r in pairs(aReads) do
             if bWrites[r] then
-                return false;
+                return false
             end
         end
 
         for r, b in pairs(aWrites) do
             if bWrites[r] or bReads[r] then
-                return false;
+                return false
             end
         end
 
-        return true;
+        return true
     end
 
     local function mergeParallelAssignmentStatements(statA, statB)
-        local lhs = {};
-        local rhs = {};
-        local aLhs, bLhs = statA.statement.lhs, statB.statement.lhs;
-        local aRhs, bRhs = statA.statement.rhs, statB.statement.rhs;
-        for i = 1, #aLhs do lhs[i] = aLhs[i]; end
-        for i = 1, #bLhs do lhs[#aLhs + i] = bLhs[i]; end
-        for i = 1, #aRhs do rhs[i] = aRhs[i]; end
-        for i = 1, #bRhs do rhs[#aRhs + i] = bRhs[i]; end
+        local lhs = {}
+        local rhs = {}
+        local aLhs, bLhs = statA.statement.lhs, statB.statement.lhs
+        local aRhs, bRhs = statA.statement.rhs, statB.statement.rhs
+        for i = 1, #aLhs do lhs[i] = aLhs[i] end
+        for i = 1, #bLhs do lhs[#aLhs + i] = bLhs[i] end
+        for i = 1, #aRhs do rhs[i] = aRhs[i] end
+        for i = 1, #bRhs do rhs[#aRhs + i] = bRhs[i] end
 
         return {
             statement = Ast.AssignmentStatement(lhs, rhs),
             writes = unionLookupTables(statA.writes, statB.writes),
             reads = unionLookupTables(statA.reads, statB.reads),
             usesUpvals = statA.usesUpvals or statB.usesUpvals,
-        };
+        }
     end
 
     local function mergeAdjacentParallelAssignments(blockstats)
-        local merged = {};
-        local i = 1;
+        local merged = {}
+        local i = 1
         while i <= #blockstats do
-            local stat = blockstats[i];
-            i = i + 1;
+            local stat = blockstats[i]
+            i = i + 1
 
             while i <= #blockstats and canMergeParallelAssignmentStatements(stat, blockstats[i]) do
-                stat = mergeParallelAssignmentStatements(stat, blockstats[i]);
-                i = i + 1;
+                stat = mergeParallelAssignmentStatements(stat, blockstats[i])
+                i = i + 1
             end
 
-            table.insert(merged, stat);
+            table.insert(merged, stat)
         end
-        return merged;
+        return merged
+    end
+
+    function Compiler:buildElseifChain(tb, l, r, pScope)
+        if r < l then
+            local emptyScope = Scope:new(pScope)
+            return Ast.Block({}, emptyScope)
+        end
+
+        local len = r - l + 1
+
+        if len == 1 then
+            tb[l].block.scope:setParent(pScope)
+            return tb[l].block
+        end
+
+        if len <= 3 then
+            local ifScope = Scope:new(pScope)
+            local elseifs = {}
+            tb[l].block.scope:setParent(ifScope)
+            local bound = math.floor((tb[l].id + tb[l + 1].id) / 2)
+            local posExpr = self:pos(ifScope)
+            local boundExpr = Ast.NumberExpression(bound)
+            local firstCondition
+            if math.random(1, 2) == 1 then
+                firstCondition = Ast.LessThanExpression(posExpr, boundExpr)
+            else
+                firstCondition = Ast.GreaterThanExpression(boundExpr, posExpr)
+            end
+            local firstBlock = tb[l].block
+
+            for i = l + 1, r - 1 do
+                tb[i].block.scope:setParent(ifScope)
+                local bound2 = math.floor((tb[i].id + tb[i + 1].id) / 2)
+                local cond
+                if math.random(1, 2) == 1 then
+                    cond = Ast.LessThanExpression(self:pos(ifScope), Ast.NumberExpression(bound2))
+                else
+                    cond = Ast.GreaterThanExpression(Ast.NumberExpression(bound2), self:pos(ifScope))
+                end
+                table.insert(elseifs, { condition = cond, body = tb[i].block })
+            end
+
+            tb[r].block.scope:setParent(ifScope)
+            local elseBlock = tb[r].block
+
+            if math.random() > 0.5 then
+                local fakeScope = Scope:new(ifScope)
+                local fakePos = self:pos(fakeScope)
+                local fakeCondition = Ast.AndExpression(
+                    Ast.LessThanExpression(fakePos, Ast.NumberExpression(tb[l].id + math.random(100, 1000))),
+                    Ast.GreaterThanExpression(fakePos, Ast.NumberExpression(tb[l].id - math.random(100, 1000)))
+                )
+                local fakeBlock = Ast.Block({
+                    Ast.NopStatement(),
+                    Ast.NopStatement(),
+                    Ast.NopStatement()
+                }, fakeScope)
+                table.insert(elseifs, {
+                    condition = fakeCondition,
+                    body = fakeBlock
+                })
+            end
+
+            return Ast.Block({
+                Ast.IfStatement(firstCondition, firstBlock, elseifs, elseBlock)
+            }, ifScope)
+        end
+
+        local mid = l + math.ceil(len / 2)
+        local bound = math.floor((tb[mid - 1].id + tb[mid].id) / 2)
+        local ifScope = Scope:new(pScope)
+
+        local lBlock = self:buildElseifChain(tb, l, mid - 1, ifScope)
+        local rBlock = self:buildElseifChain(tb, mid, r, ifScope)
+
+        local condStyle = math.random(1, 4)
+        local condition
+        local trueBlock, falseBlock
+
+        if condStyle == 1 then
+            condition = Ast.LessThanExpression(self:pos(ifScope), Ast.NumberExpression(bound))
+            trueBlock, falseBlock = lBlock, rBlock
+        elseif condStyle == 2 then
+            condition = Ast.GreaterThanExpression(Ast.NumberExpression(bound), self:pos(ifScope))
+            trueBlock, falseBlock = lBlock, rBlock
+        elseif condStyle == 3 then
+            local pos = self:pos(ifScope)
+            local b = Ast.NumberExpression(bound)
+            local x = Ast.NumberExpression(math.random(1, 100))
+            local y = Ast.NumberExpression(math.random(1, 100))
+            local invariant = Ast.EqualsExpression(
+                Ast.ModExpression(
+                    Ast.AddExpression(
+                        Ast.MulExpression(x, Ast.NumberExpression(2)),
+                        Ast.NumberExpression(1)
+                    ),
+                    Ast.NumberExpression(2)
+                ),
+                Ast.NumberExpression(1)
+            )
+            condition = Ast.AndExpression(
+                Ast.LessThanExpression(pos, Ast.AddExpression(b, Ast.NumberExpression(0))),
+                invariant
+            )
+            trueBlock, falseBlock = lBlock, rBlock
+        else
+            condition = Ast.GreaterThanExpression(self:pos(ifScope), Ast.NumberExpression(bound))
+            trueBlock, falseBlock = rBlock, lBlock
+        end
+
+        return Ast.Block({
+            Ast.IfStatement(condition, trueBlock, {}, falseBlock)
+        }, ifScope)
     end
 
     function Compiler:emitContainerFuncBody()
-        local blocks = {};
+        local blocks = {}
 
-        util.shuffle(self.blocks);
+        util.shuffle(self.blocks)
 
         for i, block in ipairs(self.blocks) do
-            local id = block.id;
-            local blockstats = block.statements;
+            local id = block.id
+            local blockstats = block.statements
 
             for i = 2, #blockstats do
-                local stat = blockstats[i];
-                local reads = stat.reads;
-                local writes = stat.writes;
-                local maxShift = 0;
-                local usesUpvals = stat.usesUpvals;
+                local stat = blockstats[i]
+                local reads = stat.reads
+                local writes = stat.writes
+                local maxShift = 0
+                local usesUpvals = stat.usesUpvals
                 for shift = 1, i - 1 do
-                    local stat2 = blockstats[i - shift];
+                    local stat2 = blockstats[i - shift]
 
                     if stat2.usesUpvals and usesUpvals then
-                        break;
+                        break
                     end
 
-                    local reads2 = stat2.reads;
-                    local writes2 = stat2.writes;
-                    local f = true;
+                    local reads2 = stat2.reads
+                    local writes2 = stat2.writes
+                    local f = true
 
                     for r, b in pairs(reads2) do
                         if(writes[r]) then
-                            f = false;
-                            break;
+                            f = false
+                            break
                         end
                     end
 
                     if f then
                         for r, b in pairs(writes2) do
                             if(writes[r]) then
-                                f = false;
-                                break;
+                                f = false
+                                break
                             end
                             if(reads[r]) then
-                                f = false;
-                                break;
+                                f = false
+                                break
                             end
                         end
                     end
@@ -182,212 +292,58 @@ return function(Compiler)
                         break
                     end
 
-                    maxShift = shift;
+                    maxShift = shift
                 end
 
-                local shift = math.random(0, maxShift);
+                local shift = math.random(0, maxShift)
                 for j = 1, shift do
-                    blockstats[i - j], blockstats[i - j + 1] = blockstats[i - j + 1], blockstats[i - j];
+                    blockstats[i - j], blockstats[i - j + 1] = blockstats[i - j + 1], blockstats[i - j]
                 end
             end
 
-            local mergedBlockStats = mergeAdjacentParallelAssignments(blockstats);
+            local mergedBlockStats = mergeAdjacentParallelAssignments(blockstats)
             for _=1, 7 do
-                mergedBlockStats = mergeAdjacentParallelAssignments(mergedBlockStats);
+                mergedBlockStats = mergeAdjacentParallelAssignments(mergedBlockStats)
             end
 
-            blockstats = {};
+            blockstats = {}
             for _, stat in ipairs(mergedBlockStats) do
-                table.insert(blockstats, stat.statement);
+                table.insert(blockstats, stat.statement)
             end
 
             local block = { id = id, index = i, block = Ast.Block(blockstats, block.scope) }
-            table.insert(blocks, block);
-            blocks[id] = block;
+            table.insert(blocks, block)
+            blocks[id] = block
         end
 
-        table.sort(blocks, function(a, b) return a.id < b.id end);
+        table.sort(blocks, function(a, b) return a.id < b.id end)
 
-        -- Build a strict threshold condition between adjacent block IDs.
-        -- Using a midpoint avoids exact-id comparisons while preserving dispatch.
         local function buildBlockThresholdCondition(scope, leftId, rightId, useAndOr)
-            local bound = math.floor((leftId + rightId) / 2);
-            local posExpr = self:pos(scope);
-            local boundExpr = Ast.NumberExpression(bound);
+            local bound = math.floor((leftId + rightId) / 2)
+            local posExpr = self:pos(scope)
+            local boundExpr = Ast.NumberExpression(bound)
 
             if useAndOr then
-                -- Kept for compatibility with caller variations.
-                return Ast.LessThanExpression(posExpr, boundExpr);
+                return Ast.LessThanExpression(posExpr, boundExpr)
             else
-                local variant = math.random(1, 2);
+                local variant = math.random(1, 2)
                 if variant == 1 then
-                    return Ast.LessThanExpression(posExpr, boundExpr);
+                    return Ast.LessThanExpression(posExpr, boundExpr)
                 else
-                    return Ast.GreaterThanExpression(boundExpr, posExpr);
+                    return Ast.GreaterThanExpression(boundExpr, posExpr)
                 end
             end
         end
 
-        -- Build an elseif chain for a range of blocks
-function Compiler:buildElseifChain(tb, l, r, pScope)
-	if r < l then
-		local emptyScope = Scope:new(pScope)
-		return Ast.Block({}, emptyScope)
-	end
-
-	local len = r - l + 1
-
-	if len == 1 then
-		tb[l].block.scope:setParent(pScope)
-		return tb[l].block
-	end
-
-	if len <= 3 then
-		local ifScope = Scope:new(pScope)
-		local elseifs = {}
-		tb[l].block.scope:setParent(ifScope)
-		local bound = math.floor((tb[l].id + tb[l + 1].id) / 2)
-		local posExpr = self:pos(ifScope)
-		local boundExpr = Ast.NumberExpression(bound)
-		local firstCondition
-		if math.random(1, 2) == 1 then
-			firstCondition = Ast.LessThanExpression(posExpr, boundExpr)
-		else
-			firstCondition = Ast.GreaterThanExpression(boundExpr, posExpr)
-		end
-		local firstBlock = tb[l].block
-
-		for i = l + 1, r - 1 do
-			tb[i].block.scope:setParent(ifScope)
-			local bound2 = math.floor((tb[i].id + tb[i + 1].id) / 2)
-			local cond
-			if math.random(1, 2) == 1 then
-				cond = Ast.LessThanExpression(self:pos(ifScope), Ast.NumberExpression(bound2))
-			else
-				cond = Ast.GreaterThanExpression(Ast.NumberExpression(bound2), self:pos(ifScope))
-			end
-			table.insert(elseifs, { condition = cond, body = tb[i].block })
-		end
-
-		tb[r].block.scope:setParent(ifScope)
-		local elseBlock = tb[r].block
-
-		if math.random() > 0.5 then
-			local fakeScope = Scope:new(ifScope)
-			local fakePos = self:pos(fakeScope)
-			local fakeCondition = Ast.AndExpression(
-				Ast.LessThanExpression(fakePos, Ast.NumberExpression(tb[l].id + math.random(100, 1000))),
-				Ast.GreaterThanExpression(fakePos, Ast.NumberExpression(tb[l].id - math.random(100, 1000)))
-			)
-			local fakeBlock = Ast.Block({
-				Ast.NopStatement(),
-				Ast.NopStatement(),
-				Ast.NopStatement()
-			}, fakeScope)
-			table.insert(elseifs, {
-				condition = fakeCondition,
-				body = fakeBlock
-			})
-		end
-
-		return Ast.Block({
-			Ast.IfStatement(firstCondition, firstBlock, elseifs, elseBlock)
-		}, ifScope)
-	end
-
-	local mid = l + math.ceil(len / 2)
-	local bound = math.floor((tb[mid - 1].id + tb[mid].id) / 2)
-	local ifScope = Scope:new(pScope)
-
-	local lBlock = self:buildElseifChain(tb, l, mid - 1, ifScope)
-	local rBlock = self:buildElseifChain(tb, mid, r, ifScope)
-
-	local condStyle = math.random(1, 4)
-	local condition
-	local trueBlock, falseBlock
-
-	if condStyle == 1 then
-		condition = Ast.LessThanExpression(self:pos(ifScope), Ast.NumberExpression(bound))
-		trueBlock, falseBlock = lBlock, rBlock
-	elseif condStyle == 2 then
-		condition = Ast.GreaterThanExpression(Ast.NumberExpression(bound), self:pos(ifScope))
-		trueBlock, falseBlock = lBlock, rBlock
-	elseif condStyle == 3 then
-		local pos = self:pos(ifScope)
-		local b = Ast.NumberExpression(bound)
-		local x = Ast.NumberExpression(math.random(1, 100))
-		local y = Ast.NumberExpression(math.random(1, 100))
-		local invariant = Ast.EqualsExpression(
-			Ast.ModExpression(
-				Ast.AddExpression(
-					Ast.MulExpression(x, Ast.NumberExpression(2)),
-					Ast.NumberExpression(1)
-				),
-				Ast.NumberExpression(2)
-			),
-			Ast.NumberExpression(1)
-		)
-		condition = Ast.AndExpression(
-			Ast.LessThanExpression(pos, Ast.AddExpression(b, Ast.NumberExpression(0))),
-			invariant
-		)
-		trueBlock, falseBlock = lBlock, rBlock
-	else
-		condition = Ast.GreaterThanExpression(self:pos(ifScope), Ast.NumberExpression(bound))
-		trueBlock, falseBlock = rBlock, lBlock
-	end
-
-	return Ast.Block({
-		Ast.IfStatement(condition, trueBlock, {}, falseBlock)
-	}, ifScope)
-end
-
-            -- For larger ranges, use binary split with and/or chaining
-            local mid = l + math.ceil(len / 2);
-            local leftMaxId = tb[mid - 1].id;
-            local rightMinId = tb[mid].id;
-            -- Float-safe split: any bound strictly between adjacent IDs works.
-            -- Midpoint avoids integer-only math.random(min, max) behavior.
-            local bound = math.floor((leftMaxId + rightMinId) / 2);
-            local ifScope = Scope:new(pScope);
-
-            local lBlock = buildElseifChain(tb, l, mid - 1, ifScope);
-            local rBlock = buildElseifChain(tb, mid, r, ifScope);
-
-            -- Randomly choose between different condition styles
-            local condStyle = math.random(1, 3);
-            local condition;
-            local trueBlock, falseBlock;
-
-            if condStyle == 1 then
-                -- pos < bound
-                condition = Ast.LessThanExpression(self:pos(ifScope), Ast.NumberExpression(bound));
-                trueBlock, falseBlock = lBlock, rBlock;
-            elseif condStyle == 2 then
-                -- bound > pos
-                condition = Ast.GreaterThanExpression(Ast.NumberExpression(bound), self:pos(ifScope));
-                trueBlock, falseBlock = lBlock, rBlock;
-            else
-                -- Equivalent split using strict > with branches reversed.
-                condition = Ast.GreaterThanExpression(self:pos(ifScope), Ast.NumberExpression(bound));
-                trueBlock, falseBlock = rBlock, lBlock;
-            end
-
-            return Ast.Block({
-                Ast.IfStatement(condition, trueBlock, {}, falseBlock);
-            }, ifScope);
-        end
-
-        local whileBody = buildElseifChain(blocks, 1, #blocks, self.containerFuncScope);
+        local whileBody = self:buildElseifChain(blocks, 1, #blocks, self.containerFuncScope)
         if self.whileScope then
-            -- Ensure whileScope is properly connected
-            self.whileScope:setParent(self.containerFuncScope);
+            self.whileScope:setParent(self.containerFuncScope)
         end
 
-        self.whileScope:addReferenceToHigherScope(self.containerFuncScope, self.returnVar, 1);
-        self.whileScope:addReferenceToHigherScope(self.containerFuncScope, self.posVar);
+        self.whileScope:addReferenceToHigherScope(self.containerFuncScope, self.returnVar, 1)
+        self.whileScope:addReferenceToHigherScope(self.containerFuncScope, self.posVar)
 
-        self.containerFuncScope:addReferenceToHigherScope(self.scope, self.unpackVar);
+        self.containerFuncScope:addReferenceToHigherScope(self.scope, self.unpackVar)
 
         local declarations = {
             self.returnVar,
@@ -395,33 +351,32 @@ end
 
         for i, var in pairs(self.registerVars) do
             if(i ~= MAX_REGS) then
-                table.insert(declarations, var);
+                table.insert(declarations, var)
             end
         end
 
         local stats = {}
 
         if self.maxUsedRegister >= MAX_REGS then
-            table.insert(stats, Ast.LocalVariableDeclaration(self.containerFuncScope, {self.registerVars[MAX_REGS]}, {Ast.TableConstructorExpression({})}));
+            table.insert(stats, Ast.LocalVariableDeclaration(self.containerFuncScope, {self.registerVars[MAX_REGS]}, {Ast.TableConstructorExpression({})}))
         end
 
-        table.insert(stats, Ast.LocalVariableDeclaration(self.containerFuncScope, util.shuffle(declarations), {}));
+        table.insert(stats, Ast.LocalVariableDeclaration(self.containerFuncScope, util.shuffle(declarations), {}))
 
-        table.insert(stats, Ast.WhileStatement(whileBody, Ast.VariableExpression(self.containerFuncScope, self.posVar)));
-
+        table.insert(stats, Ast.WhileStatement(whileBody, Ast.VariableExpression(self.containerFuncScope, self.posVar)))
 
         table.insert(stats, Ast.AssignmentStatement({
             Ast.AssignmentVariable(self.containerFuncScope, self.posVar)
         }, {
             Ast.LenExpression(Ast.VariableExpression(self.containerFuncScope, self.detectGcCollectVar))
-        }));
+        }))
 
         table.insert(stats, Ast.ReturnStatement{
             Ast.FunctionCallExpression(Ast.VariableExpression(self.scope, self.unpackVar), {
                 Ast.VariableExpression(self.containerFuncScope, self.returnVar)
-            });
-        });
+            })
+        })
 
-        return Ast.Block(stats, self.containerFuncScope);
+        return Ast.Block(stats, self.containerFuncScope)
     end
 end
