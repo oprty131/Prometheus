@@ -5,7 +5,6 @@
 -- This Script provides the predefined obfuscation presets for Prometheus
 
 return {
-	-- Minifies your code. Does not obfuscate it. No performance loss.
 	["Minify"] = {
 		LuaVersion = "Lua51",
 		VarNamePrefix = "",
@@ -15,7 +14,6 @@ return {
 		Steps = {},
 	},
 
-	-- Weak obfuscation. Very readable, low performance loss.
 	["Weak"] = {
 		LuaVersion = "Lua51",
 		VarNamePrefix = "",
@@ -35,10 +33,6 @@ return {
 		},
 	},
 
-	-- This is here for the tests.lua file.
-	-- It helps isolate any problems with the Vmify step.
-	-- It is not recommended to use this preset for obfuscation.
-	-- Use the Weak, Medium, or Strong for obfuscation instead.
 	["Vmify"] = {
 		LuaVersion = "Lua51",
 		VarNamePrefix = "",
@@ -50,7 +44,6 @@ return {
 		},
 	},
 
-	-- Medium obfuscation. Moderate obfuscation, moderate performance loss.
 	["Medium"] = {
 		LuaVersion = "Lua51",
 		VarNamePrefix = "",
@@ -78,10 +71,10 @@ return {
 			},
 			{ Name = "NumbersToExpressions", Settings = {} },
 			{ Name = "WrapInFunction", Settings = {} },
+			{ Name = "DeadCode", Settings = { Threshold = 0.4, MaxInsertions = 2 } },
 		},
 	},
 
-	-- Strong obfuscation, high performance loss.
 	["Strong"] = {
 		LuaVersion = "Lua51",
 		VarNamePrefix = "",
@@ -115,6 +108,8 @@ return {
 				},
 			},
 			{ Name = "WrapInFunction", Settings = {} },
+			{ Name = "DeadCode", Settings = { Threshold = 0.6, MaxInsertions = 3 } },
+			{ Name = "DeadCode", Settings = { Threshold = 0.4, MaxInsertions = 2 } },
 		},
 	},
 }
