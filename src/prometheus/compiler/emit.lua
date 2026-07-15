@@ -229,49 +229,118 @@ return function(Compiler)
         end
 
         -- Build an elseif chain for a range of blocks
-        local function buildElseifChain(tb, l, r, pScope)
-            -- Handle invalid range by returning an empty block
-            if r < l then
-                local emptyScope = Scope:new(pScope);
-                return Ast.Block({}, emptyScope);
-            end
+function Compiler:buildElseifChain(tb, l, r, pScope)
+	if r < l then
+		local emptyScope = Scope:new(pScope)
+		return Ast.Block({}, emptyScope)
+	end
 
-            local len = r - l + 1;
+	local len = r - l + 1
 
-            -- For single block
-            if len == 1 then
-                tb[l].block.scope:setParent(pScope);
-                return tb[l].block;
-            end
+	if len == 1 then
+		tb[l].block.scope:setParent(pScope)
+		return tb[l].block
+	end
 
-            -- For small ranges, use elseif chain
-            if len <= 4 then
-                local ifScope = Scope:new(pScope);
-                local elseifs = {};
+	if len <= 3 then
+		local ifScope = Scope:new(pScope)
+		local elseifs = {}
+		tb[l].block.scope:setParent(ifScope)
+		local bound = math.floor((tb[l].id + tb[l + 1].id) / 2)
+		local posExpr = self:pos(ifScope)
+		local boundExpr = Ast.NumberExpression(bound)
+		local firstCondition
+		if math.random(1, 2) == 1 then
+			firstCondition = Ast.LessThanExpression(posExpr, boundExpr)
+		else
+			firstCondition = Ast.GreaterThanExpression(boundExpr, posExpr)
+		end
+		local firstBlock = tb[l].block
 
-                -- First block uses the first midpoint threshold
-                tb[l].block.scope:setParent(ifScope);
-                local firstCondition = buildBlockThresholdCondition(ifScope, tb[l].id, tb[l + 1].id, false);
-                local firstBlock = tb[l].block;
+		for i = l + 1, r - 1 do
+			tb[i].block.scope:setParent(ifScope)
+			local bound2 = math.floor((tb[i].id + tb[i + 1].id) / 2)
+			local cond
+			if math.random(1, 2) == 1 then
+				cond = Ast.LessThanExpression(self:pos(ifScope), Ast.NumberExpression(bound2))
+			else
+				cond = Ast.GreaterThanExpression(Ast.NumberExpression(bound2), self:pos(ifScope))
+			end
+			table.insert(elseifs, { condition = cond, body = tb[i].block })
+		end
 
-                -- Middle blocks use their upper midpoint threshold
-                for i = l + 1, r - 1 do
-                    tb[i].block.scope:setParent(ifScope);
-                    local condition = buildBlockThresholdCondition(ifScope, tb[i].id, tb[i + 1].id, false);
-                    table.insert(elseifs, {
-                        condition = condition,
-                        body = tb[i].block
-                    });
-                end
+		tb[r].block.scope:setParent(ifScope)
+		local elseBlock = tb[r].block
 
-                -- Last block becomes else
-                tb[r].block.scope:setParent(ifScope);
-                local elseBlock = tb[r].block;
+		if math.random() > 0.5 then
+			local fakeScope = Scope:new(ifScope)
+			local fakePos = self:pos(fakeScope)
+			local fakeCondition = Ast.AndExpression(
+				Ast.LessThanExpression(fakePos, Ast.NumberExpression(tb[l].id + math.random(100, 1000))),
+				Ast.GreaterThanExpression(fakePos, Ast.NumberExpression(tb[l].id - math.random(100, 1000)))
+			)
+			local fakeBlock = Ast.Block({
+				Ast.NopStatement(),
+				Ast.NopStatement(),
+				Ast.NopStatement()
+			}, fakeScope)
+			table.insert(elseifs, {
+				condition = fakeCondition,
+				body = fakeBlock
+			})
+		end
 
-                return Ast.Block({
-                    Ast.IfStatement(firstCondition, firstBlock, elseifs, elseBlock);
-                }, ifScope);
-            end
+		return Ast.Block({
+			Ast.IfStatement(firstCondition, firstBlock, elseifs, elseBlock)
+		}, ifScope)
+	end
+
+	local mid = l + math.ceil(len / 2)
+	local bound = math.floor((tb[mid - 1].id + tb[mid].id) / 2)
+	local ifScope = Scope:new(pScope)
+
+	local lBlock = self:buildElseifChain(tb, l, mid - 1, ifScope)
+	local rBlock = self:buildElseifChain(tb, mid, r, ifScope)
+
+	local condStyle = math.random(1, 4)
+	local condition
+	local trueBlock, falseBlock
+
+	if condStyle == 1 then
+		condition = Ast.LessThanExpression(self:pos(ifScope), Ast.NumberExpression(bound))
+		trueBlock, falseBlock = lBlock, rBlock
+	elseif condStyle == 2 then
+		condition = Ast.GreaterThanExpression(Ast.NumberExpression(bound), self:pos(ifScope))
+		trueBlock, falseBlock = lBlock, rBlock
+	elseif condStyle == 3 then
+		local pos = self:pos(ifScope)
+		local b = Ast.NumberExpression(bound)
+		local x = Ast.NumberExpression(math.random(1, 100))
+		local y = Ast.NumberExpression(math.random(1, 100))
+		local invariant = Ast.EqualsExpression(
+			Ast.ModExpression(
+				Ast.AddExpression(
+					Ast.MulExpression(x, Ast.NumberExpression(2)),
+					Ast.NumberExpression(1)
+				),
+				Ast.NumberExpression(2)
+			),
+			Ast.NumberExpression(1)
+		)
+		condition = Ast.AndExpression(
+			Ast.LessThanExpression(pos, Ast.AddExpression(b, Ast.NumberExpression(0))),
+			invariant
+		)
+		trueBlock, falseBlock = lBlock, rBlock
+	else
+		condition = Ast.GreaterThanExpression(self:pos(ifScope), Ast.NumberExpression(bound))
+		trueBlock, falseBlock = rBlock, lBlock
+	end
+
+	return Ast.Block({
+		Ast.IfStatement(condition, trueBlock, {}, falseBlock)
+	}, ifScope)
+end
 
             -- For larger ranges, use binary split with and/or chaining
             local mid = l + math.ceil(len / 2);
